@@ -20,6 +20,7 @@
 #include <numeric>    // `std::accumulate`
 #include <atomic>     // Thread-safe generation counters
 #include <filesystem> // Enumerating the directory
+#include <iostream>   // `std::cerr` `std::cout`
 #include <fstream>    // Passing file contents to JSON parser
 
 // TODO: These alternative containers need further testing:
@@ -28,10 +29,10 @@
 #include <ucset/consistent_set.hpp> // `ucset::consistent_set_gt`
 #include <ucset/locked.hpp>         // `ucset::locked_gt`
 
-#include <nlohmann/json.hpp>        // `nlohmann::json`
-#include <arrow/io/file.h>          // `arrow::io::ReadableFile`
-#include <parquet/stream_reader.h>  // `parquet::StreamReader`
-#include <parquet/stream_writer.h>  // `parquet::StreamWriter`
+#include <nlohmann/json.hpp>       // `nlohmann::json`
+#include <arrow/io/file.h>         // `arrow::io::ReadableFile`
+#include <parquet/stream_reader.h> // `parquet::StreamReader`
+#include <parquet/stream_writer.h> // `parquet::StreamWriter`
 
 #include "ustore/db.h"
 #include "helpers/file.hpp"
@@ -50,6 +51,19 @@ ustore_key_t const ustore_key_unknown_k = std::numeric_limits<ustore_key_t>::max
 bool const ustore_supports_transactions_k = true;
 bool const ustore_supports_named_collections_k = true;
 bool const ustore_supports_snapshots_k = false;
+
+void log_failure(char const* what) {
+    std::cerr << what << ": "
+              << "\n";
+}
+
+template <typename counter_at = char>
+void log_info(char const* info, counter_at* counter = nullptr) {
+    if (counter)
+        std::cout << info << *counter << "\n";
+    else
+        std::cout << info << "\n";
+}
 
 /*********************************************************/
 /*****************	 C++ Implementation	  ****************/
@@ -424,7 +438,7 @@ void read(database_t& db, std::string const& path, ustore_error_t* c_error) noex
 /*********************************************************/
 
 void ustore_database_init(ustore_database_init_t* c_ptr) {
-
+    log_info("Process start: Database initializing");
     ustore_database_init_t& c = *c_ptr;
     safe_section("Initializing DBMS", c.error, [&] {
         auto maybe_pairs = ucset_t::make();
@@ -479,6 +493,7 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
         }
         *c.db = db_ptr;
     });
+    log_info("Database successfuly initialized");
 }
 
 void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
@@ -638,7 +653,7 @@ void ustore_write(ustore_write_t* c_ptr) {
 }
 
 void ustore_scan(ustore_scan_t* c_ptr) {
-
+    log_info("Process start: Scan");
     ustore_scan_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     if (!c.tasks_count)
@@ -664,6 +679,7 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(scans.limits, scans.count, 0ul);
+    log_info("Keys counted: ", &total_keys);
     auto keys_output = *c.keys = arena.alloc<ustore_key_t>(total_keys, c.error).begin();
     return_if_error_m(c.error);
 
@@ -689,6 +705,7 @@ void ustore_scan(ustore_scan_t* c_ptr) {
         counts[task_idx] = matched_pairs_count;
     }
     offsets[scans.count] = keys_output - *c.keys;
+    log_info("Process end: Scan");
 }
 
 struct key_from_pair_t {
@@ -713,7 +730,7 @@ struct key_iterator_t {
 };
 
 void ustore_sample(ustore_sample_t* c_ptr) {
-
+    log_info("Process start: Sample");
     ustore_sample_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     return_error_if_m(!c.transaction, c.error, uninitialized_state_k, "Transaction sampling aren't supported!");
@@ -734,6 +751,7 @@ void ustore_sample(ustore_sample_t* c_ptr) {
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(samples.limits, samples.count, 0ul);
+    log_info("Keys counted: ", &total_keys);
     auto keys_output = *c.keys = arena.alloc<ustore_key_t>(total_keys, c.error).begin();
     return_if_error_m(c.error);
 
@@ -756,10 +774,11 @@ void ustore_sample(ustore_sample_t* c_ptr) {
         keys_output += task.limit;
     }
     offsets[samples.count] = keys_output - *c.keys;
+    log_info("Process end: Sample");
 }
 
 void ustore_measure(ustore_measure_t* c_ptr) {
-
+    log_info("Process start: Measure");
     ustore_measure_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     if (!c.tasks_count)
@@ -808,6 +827,7 @@ void ustore_measure(ustore_measure_t* c_ptr) {
         min_space_usages[i] = space_usage;
         max_space_usages[i] = std::numeric_limits<ustore_size_t>::max();
     }
+    log_info("Process end: Measure");
 }
 
 /*********************************************************/
@@ -815,7 +835,7 @@ void ustore_measure(ustore_measure_t* c_ptr) {
 /*********************************************************/
 
 void ustore_collection_create(ustore_collection_create_t* c_ptr) {
-
+    log_info("Process start: Collection create");
     ustore_collection_create_t& c = *c_ptr;
     auto name_len = c.name ? std::strlen(c.name) : 0;
     return_error_if_m(name_len, c.error, args_wrong_k, "Default collection is always present");
@@ -830,10 +850,11 @@ void ustore_collection_create(ustore_collection_create_t* c_ptr) {
     auto new_collection_id = new_collection(db);
     safe_section("Inserting new collection", c.error, [&] { db.names.emplace(collection_name, new_collection_id); });
     *c.id = new_collection_id;
+    log_info("Collection successfuly created");
 }
 
 void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
-
+    log_info("Process start: Collection drop");
     ustore_collection_drop_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -857,10 +878,12 @@ void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
             db.names.erase(it);
             break;
         }
+        log_info("Collection successfuly droped");
     }
 
     else if (c.mode == ustore_drop_keys_vals_k) {
         auto status = db.pairs.erase_range(c.id, c.id + 1, no_op_t {});
+        log_info("Collection successfuly droped");
         return export_error_code(status, c.error);
     }
 
@@ -868,12 +891,13 @@ void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
         auto status = db.pairs.range(c.id, c.id + 1, [&](pair_t& pair) noexcept {
             pair = pair_t {pair.collection_key, value_view_t::make_empty(), nullptr};
         });
+        log_info("Collection successfuly droped");
         return export_error_code(status, c.error);
     }
 }
 
 void ustore_collection_list(ustore_collection_list_t* c_ptr) {
-
+    log_info("Process start: Collection list");
     ustore_collection_list_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     return_error_if_m(c.count && c.names, c.error, args_combo_k, "Need names and outputs!");
@@ -885,6 +909,7 @@ void ustore_collection_list(ustore_collection_list_t* c_ptr) {
     std::shared_lock _ {db.restructuring_mutex};
     std::size_t collections_count = db.names.size();
     *c.count = static_cast<ustore_size_t>(collections_count);
+    log_info("Collections counted: ", &collections_count);
 
     // Every string will be null-terminated
     std::size_t strings_length = 0;
@@ -911,6 +936,7 @@ void ustore_collection_list(ustore_collection_list_t* c_ptr) {
         ++i;
     }
     offs[i] = static_cast<ustore_length_t>(names - *c.names);
+    log_info("Process end: Collection list");
 }
 
 void ustore_database_control(ustore_database_control_t* c_ptr) {
@@ -928,7 +954,7 @@ void ustore_database_control(ustore_database_control_t* c_ptr) {
 /*********************************************************/
 
 void ustore_transaction_init(ustore_transaction_init_t* c_ptr) {
-
+    log_info("Process start: Transaction initializing");
     ustore_transaction_init_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     validate_transaction_begin(c.transaction, c.options, c.error);
@@ -947,11 +973,12 @@ void ustore_transaction_init(ustore_transaction_init_t* c_ptr) {
 
     transaction_t& txn = *reinterpret_cast<transaction_t*>(*c.transaction);
     auto status = txn.reset();
+    log_info("Transaction successfuly initialized");
     return export_error_code(status, c.error);
 }
 
 void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
-
+    log_info("Process start: Transaction commit");
     ustore_transaction_commit_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     database_t& db = *reinterpret_cast<database_t*>(c.db);
@@ -972,6 +999,7 @@ void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
     // TODO: Degrade the lock to "shared" state before starting expensive IO
     if (c.options & ustore_option_write_flush_k)
         safe_section("Saving to disk", c.error, [&] { write(db, db.persisted_directory, c.error); });
+    log_info("Transaction successfuly commited");
 }
 
 /*********************************************************/
@@ -979,17 +1007,22 @@ void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
 /*********************************************************/
 
 void ustore_arena_free(ustore_arena_t c_arena) {
+    log_info("Process start: Arena free");
     clear_linked_memory(c_arena);
+    log_info("Arena is free");
 }
 
 void ustore_transaction_free(ustore_transaction_t const c_transaction) {
+    log_info("Process start: Transaction free");
     if (!c_transaction)
         return;
     transaction_t& txn = *reinterpret_cast<transaction_t*>(c_transaction);
     delete &txn;
+    log_info("Transaction successfuly deleted");
 }
 
 void ustore_database_free(ustore_database_t c_db) {
+    log_info("Process start: Database free");
     if (!c_db)
         return;
 
@@ -1000,6 +1033,7 @@ void ustore_database_free(ustore_database_t c_db) {
     }
 
     delete &db;
+    log_info("Database successfuly deleted");
 }
 
 void ustore_error_free(ustore_error_t) {

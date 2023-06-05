@@ -19,6 +19,7 @@
 
 #include <mutex>
 #include <fstream>
+#include <iostream>   // `std::cerr` `std::cout`
 #include <filesystem>
 
 #include <rocksdb/db.h>
@@ -47,6 +48,19 @@ ustore_key_t const ustore_key_unknown_k = std::numeric_limits<ustore_key_t>::max
 bool const ustore_supports_transactions_k = true;
 bool const ustore_supports_named_collections_k = true;
 bool const ustore_supports_snapshots_k = true;
+
+void log_failure(char const* what) {
+    std::cerr << what << ": "
+              << "\n";
+}
+
+template <typename counter_at = char>
+void log_info(char const* info, counter_at* counter = nullptr) {
+    if (counter)
+        std::cout << info << *counter << "\n";
+    else
+        std::cout << info << "\n";
+}
 
 using rocks_native_t = rocksdb::OptimisticTransactionDB;
 using rocks_status_t = rocksdb::Status;
@@ -127,7 +141,7 @@ rocks_collection_t* rocks_collection(rocks_db_t& db, ustore_collection_t collect
 /*********************************************************/
 
 void ustore_database_init(ustore_database_init_t* c_ptr) {
-
+    log_info("Process start: Database initializing");
     ustore_database_init_t& c = *c_ptr;
     safe_section("Opening RocksDB", c.error, [&] {
         rocks_db_t* db_ptr = new rocks_db_t;
@@ -236,10 +250,11 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
         db_ptr->native = std::unique_ptr<rocks_native_t>(native_db);
         *c.db = db_ptr;
     });
+    log_info("Database successfuly initialized");
 }
 
 void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
-
+    log_info("Process start: Snapshot list");
     ustore_snapshot_list_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     return_error_if_m(c.count && c.ids, c.error, args_combo_k, "Need outputs!");
@@ -259,10 +274,11 @@ void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
     std::size_t i = 0;
     for (const auto& [id, _] : db.snapshots)
         ids[i++] = id;
+    log_info("Process end: Snapshot list");
 }
 
 void ustore_snapshot_create(ustore_snapshot_create_t* c_ptr) {
-
+    log_info("Process start: Snapshot create");
     ustore_snapshot_create_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -282,9 +298,11 @@ void ustore_snapshot_create(ustore_snapshot_create_t* c_ptr) {
 
     *c.id = reinterpret_cast<ustore_snapshot_t>(rocks_snapshot);
     db.snapshots[*c.id] = rocks_snapshot;
+    log_info("Snapshot successfuly created");
 }
 
 void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
+    log_info("Process start: Snapshot exporting");
     ustore_snapshot_export_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -310,10 +328,11 @@ void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
     catch (...) {
         *c.error = "Snapshot Export Failure";
     }
+    log_info("Snapshot successfuly exported");
 }
 
 void ustore_snapshot_drop(ustore_snapshot_drop_t* c_ptr) {
-
+    log_info("Process start: Snapshot droping");
     if (!c_ptr)
         return;
 
@@ -333,6 +352,7 @@ void ustore_snapshot_drop(ustore_snapshot_drop_t* c_ptr) {
     db.mutex.lock();
     db.snapshots.erase(id);
     db.mutex.unlock();
+    log_info("Snapshot successfuly droped");
 }
 
 void write_one( //
@@ -595,7 +615,7 @@ void ustore_read(ustore_read_t* c_ptr) {
 }
 
 void ustore_scan(ustore_scan_t* c_ptr) {
-
+    log_info("Process start: Scan");
     ustore_scan_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -620,6 +640,7 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(tasks.limits, tasks.count, 0ul);
+    log_info("Keys counted: ", &total_keys);
     auto keys_output = *c.keys = arena.alloc<ustore_key_t>(total_keys, c.error).begin();
     return_if_error_m(c.error);
 
@@ -657,10 +678,11 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     }
 
     offsets[tasks.size()] = keys_output - *c.keys;
+    log_info("Process end: Scan");
 }
 
 void ustore_sample(ustore_sample_t* c_ptr) {
-
+    log_info("Process start: Sample");
     ustore_sample_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     if (!c.tasks_count)
@@ -683,6 +705,7 @@ void ustore_sample(ustore_sample_t* c_ptr) {
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(samples.limits, samples.count, 0ul);
+    log_info("Keys counted: ", &total_keys);
     auto keys_output = *c.keys = arena.alloc<ustore_key_t>(total_keys, c.error).begin();
     return_if_error_m(c.error);
 
@@ -713,10 +736,11 @@ void ustore_sample(ustore_sample_t* c_ptr) {
         keys_output += task.limit;
     }
     offsets[samples.count] = keys_output - *c.keys;
+    log_info("Process end: Sample");
 }
 
 void ustore_measure(ustore_measure_t* c_ptr) {
-
+    log_info("Process start: Measure");
     ustore_measure_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -764,10 +788,11 @@ void ustore_measure(ustore_measure_t* c_ptr) {
         min_space_usages[i] = approximate_size;
         max_space_usages[i] = sst_files_size;
     }
+    log_info("Process end: Measure");
 }
 
 void ustore_collection_create(ustore_collection_create_t* c_ptr) {
-
+    log_info("Process start: Collection create");
     ustore_collection_create_t& c = *c_ptr;
     auto name_len = c.name ? std::strlen(c.name) : 0;
     return_error_if_m(name_len, c.error, args_wrong_k, "Default collection is always present");
@@ -788,10 +813,11 @@ void ustore_collection_create(ustore_collection_create_t* c_ptr) {
         db.columns.push_back(collection);
         *c.id = reinterpret_cast<ustore_collection_t>(collection);
     }
+    log_info("Collection successfuly created");
 }
 
 void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
-
+    log_info("Process start: Collection drop");
     ustore_collection_drop_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -828,6 +854,7 @@ void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
                 break;
             }
         }
+        log_info("Collection successfuly droped");
         return;
     }
     else if (c.mode == ustore_drop_keys_vals_k) {
@@ -838,6 +865,7 @@ void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
             batch.Delete(collection_ptr_to_clear, it->key());
         rocks_status_t status = db.native->Write(options, &batch);
         export_error(status, c.error);
+        log_info("Collection successfuly droped");
         return;
     }
 
@@ -849,12 +877,13 @@ void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
             batch.Put(collection_ptr_to_clear, it->key(), rocksdb::Slice());
         rocks_status_t status = db.native->Write(options, &batch);
         export_error(status, c.error);
+        log_info("Collection successfuly droped");
         return;
     }
 }
 
 void ustore_collection_list(ustore_collection_list_t* c_ptr) {
-
+    log_info("Process start: Collection list");
     ustore_collection_list_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     return_error_if_m(c.count && c.names, c.error, args_combo_k, "Need names and outputs!");
@@ -865,6 +894,7 @@ void ustore_collection_list(ustore_collection_list_t* c_ptr) {
     rocks_db_t& db = *reinterpret_cast<rocks_db_t*>(c.db);
     std::size_t collections_count = db.columns.size() - 1;
     *c.count = static_cast<ustore_size_t>(collections_count);
+    log_info("Collections counted: ", &collections_count);
 
     // Every string will be null-terminated
     std::size_t strings_length = 0;
@@ -895,6 +925,7 @@ void ustore_collection_list(ustore_collection_list_t* c_ptr) {
         ++i;
     }
     offs[i] = static_cast<ustore_length_t>(names - *c.names);
+    log_info("Process end: Collection list");
 }
 
 void ustore_database_control(ustore_database_control_t* c_ptr) {
@@ -905,7 +936,7 @@ void ustore_database_control(ustore_database_control_t* c_ptr) {
 }
 
 void ustore_transaction_init(ustore_transaction_init_t* c_ptr) {
-
+    log_info("Process start: Transaction initializing");
     ustore_transaction_init_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     validate_transaction_begin(c.transaction, c.options, c.error);
@@ -924,9 +955,11 @@ void ustore_transaction_init(ustore_transaction_init_t* c_ptr) {
         *c.error = "Couldn't start a transaction!";
     else
         *c.transaction = new_txn;
+    log_info("Transaction successfuly initialized");
 }
 
 void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
+    log_info("Process start: Transaction commit");
     ustore_transaction_commit_t& c = *c_ptr;
     if (!c.transaction)
         return;
@@ -946,19 +979,25 @@ void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
             *c.sequence_number = db.native->GetLatestSequenceNumber();
         db.mutex.unlock();
     }
+    log_info("Transaction successfuly commited");
 }
 
 void ustore_arena_free(ustore_arena_t c_arena) {
+    log_info("Process start: Arena free");
     clear_linked_memory(c_arena);
+    log_info("Arena is free");
 }
 
 void ustore_transaction_free(ustore_transaction_t c_transaction) {
+    log_info("Process start: Transaction free");
     if (!c_transaction)
         return;
     delete reinterpret_cast<rocks_txn_t*>(c_transaction);
+    log_info("Transaction successfuly deleted");
 }
 
 void ustore_database_free(ustore_database_t c_db) {
+    log_info("Process start: Database free");
     if (!c_db)
         return;
     rocks_db_t& db = *reinterpret_cast<rocks_db_t*>(c_db);
@@ -966,6 +1005,7 @@ void ustore_database_free(ustore_database_t c_db) {
         db.native->DestroyColumnFamilyHandle(cf);
     db.native.reset();
     delete &db;
+    log_info("Database successfuly deleted");
 }
 
 void ustore_error_free(ustore_error_t const) {

@@ -14,7 +14,7 @@
 #include <charconv>   // `std::from_chars`
 #include <chrono>     // `std::time_point`
 #include <cstdio>     // `std::printf`
-#include <iostream>   // `std::cerr`
+#include <iostream>   // `std::cerr` `std::cout`
 #include <filesystem> // Enumerating and creating directories
 #include <unordered_map>
 #include <unordered_set>
@@ -43,6 +43,19 @@ inline static arf::ActionType const kActionSnapExport {kFlightSnapExport, "Snaps
 inline static arf::ActionType const kActionSnapDrop {kFlightSnapDrop, "Delete a named snapshot."};
 inline static arf::ActionType const kActionTxnBegin {kFlightTxnBegin, "Starts an ACID transaction and returns its ID."};
 inline static arf::ActionType const kActionTxnCommit {kFlightTxnCommit, "Commit a previously started transaction."};
+
+void log_failure(char const* what) {
+    std::cerr << what << ": "
+              << "\n";
+}
+
+template <typename counter_at = void>
+void log_info(char const* info, counter_at* counter = nullptr) {
+    if (counter)
+        std::cout << info << counter << "\n";
+    else
+        std::cout << info << "\n";
+}
 
 /**
  * @brief Searches for a "value" among key-value pairs passed in URI after path.
@@ -571,6 +584,7 @@ class UStoreService : public arf::FlightServerBase {
 
         // Locating the collection ID
         if (is_query(action.type, kActionColOpen.type)) {
+            log_info("Action start: Collection create");
             if (!params.collection_name)
                 return ar::Status::Invalid("Missing collection name argument");
 
@@ -594,16 +608,18 @@ class UStoreService : public arf::FlightServerBase {
                 return ar::Status::ExecutionError(status.message());
 
             *results_ptr = return_scalar<ustore_collection_t>(collection_id);
+            log_info("Action end: Collection create");
             return ar::Status::OK();
         }
 
         // Dropping a collection
         if (is_query(action.type, kActionColDrop.type)) {
+            log_info("Action start: Collection drop");
             if (!params.collection_id)
                 return ar::Status::Invalid("Missing collection ID argument");
 
-            ustore_drop_mode_t mode =                                       //
-                params.collection_drop_mode == kParamDropModeValues         //
+            ustore_drop_mode_t mode =                               //
+                params.collection_drop_mode == kParamDropModeValues //
                     ? ustore_drop_vals_k
                     : params.collection_drop_mode == kParamDropModeContents //
                           ? ustore_drop_keys_vals_k
@@ -623,11 +639,13 @@ class UStoreService : public arf::FlightServerBase {
             if (!status)
                 return ar::Status::ExecutionError(status.message());
             *results_ptr = return_empty();
+            log_info("Action end: Collection drop");
             return ar::Status::OK();
         }
 
         // Create a snapshot
         if (is_query(action.type, kActionSnapOpen.type)) {
+            log_info("Action start: Snapshot create");
             if (params.snapshot_id)
                 return ar::Status::Invalid("Missing snapshot ID argument");
 
@@ -643,11 +661,13 @@ class UStoreService : public arf::FlightServerBase {
                 return ar::Status::ExecutionError(status.message());
 
             *results_ptr = return_scalar<ustore_snapshot_t>(snapshot_id);
+            log_info("Action end: Snapshot close");
             return ar::Status::OK();
         }
 
         // Export a snapshot
         if (is_query(action.type, kActionSnapExport.type)) {
+            log_info("Action start: Snapshot export");
             if (params.snapshot_id)
                 return ar::Status::Invalid("Missing snapshot ID argument");
 
@@ -668,11 +688,13 @@ class UStoreService : public arf::FlightServerBase {
                 return ar::Status::ExecutionError(status.message());
 
             *results_ptr = return_empty();
+            log_info("Action end: Snapshot export");
             return ar::Status::OK();
         }
 
         // Dropping a snapshot
         if (is_query(action.type, kActionSnapDrop.type)) {
+            log_info("Action start: Snapshot drop");
             if (!params.snapshot_id)
                 return ar::Status::Invalid("Missing snapshot ID argument");
 
@@ -690,11 +712,13 @@ class UStoreService : public arf::FlightServerBase {
             if (!status)
                 return ar::Status::ExecutionError(status.message());
             *results_ptr = return_empty();
+            log_info("Action end: Snapshot export");
             return ar::Status::OK();
         }
 
         // Starting a transaction
         if (is_query(action.type, kActionTxnBegin.type)) {
+            log_info("Action start: An ACID transaction");
             if (!params.transaction_id)
                 params.session_id.txn_id = static_cast<txn_id_t>(std::rand());
 
@@ -746,6 +770,7 @@ class UStoreService : public arf::FlightServerBase {
 
             sessions_.release_txn(params.session_id);
             *results_ptr = return_empty();
+            log_info("Action end: An ACID transaction");
             return ar::Status::OK();
         }
 
@@ -791,7 +816,7 @@ class UStoreService : public arf::FlightServerBase {
             return ar::Status::ExecutionError(status.message());
 
         if (is_query(desc.cmd, kFlightRead)) {
-
+            log_info("Process start: Read");
             /// @param `keys`
             auto input_keys = get_keys(input_schema_c, input_batch_c, kArgKeys);
             if (!input_keys)
@@ -875,8 +900,10 @@ class UStoreService : public arf::FlightServerBase {
                     status.member_ptr());
             if (!status)
                 return ar::Status::ExecutionError(status.message());
+            log_info("Process end: Read");
         }
         else if (is_query(desc.cmd, kFlightReadPath)) {
+            log_info("Process start: Read path");
 
             /// @param `keys`
             auto input_paths = get_contents(input_schema_c, input_batch_c, kArgPaths.c_str());
@@ -959,8 +986,10 @@ class UStoreService : public arf::FlightServerBase {
                     status.member_ptr());
             if (!status)
                 return ar::Status::ExecutionError(status.message());
+            log_info("Process end: Read path");
         }
         else if (is_query(desc.cmd, kFlightMatchPath)) {
+            log_info("Process start: Match path");
             /// @param `previous`
             auto input_prevs = get_contents(input_schema_c, input_batch_c, kArgPrevPatterns.c_str());
 
@@ -1065,8 +1094,10 @@ class UStoreService : public arf::FlightServerBase {
 
             if (!status)
                 return ar::Status::ExecutionError(status.message());
+            log_info("Process end: Match path");
         }
         else if (is_query(desc.cmd, kFlightScan)) {
+            log_info("Process start: Scan");
 
             /// @param `start_keys`
             auto input_start_keys = get_keys(input_schema_c, input_batch_c, kArgScanStarts);
@@ -1137,9 +1168,10 @@ class UStoreService : public arf::FlightServerBase {
                 status.member_ptr());
             if (!status)
                 return ar::Status::ExecutionError(status.message());
+            log_info("Process end: Scan");
         }
         else if (is_query(desc.cmd, kFlightSample)) {
-
+            log_info("Process start: Sample");
             /// @param `limits`
             auto input_limits = get_lengths(input_schema_c, input_batch_c, kArgCountLimits);
 
@@ -1203,7 +1235,10 @@ class UStoreService : public arf::FlightServerBase {
                 output_schema_c.children[1],
                 output_batch_c.children[1],
                 status.member_ptr());
+            log_info("Process start: Sample");
         }
+        else
+            return ar::Status::NotImplemented("Unknown action type: ", action.type);
 
         if (is_empty_values)
             output_batch_c.children[0]->buffers[2] = &zero_size_data_k;
@@ -1247,7 +1282,7 @@ class UStoreService : public arf::FlightServerBase {
             return ar_status;
 
         if (is_query(desc.cmd, kFlightWrite)) {
-
+            log_info("Process start: Write");
             /// @param `keys`
             auto input_keys = get_keys(input_schema_c, input_batch_c, kArgKeys);
             if (!input_keys)
@@ -1293,8 +1328,10 @@ class UStoreService : public arf::FlightServerBase {
 
             if (!status)
                 return ar::Status::ExecutionError(status.message());
+            log_info("Process end: Write");
         }
         else if (is_query(desc.cmd, kFlightWritePath)) {
+            log_info("Process start: Write path");
             /// @param `keys`
             auto input_paths = get_contents(input_schema_c, input_batch_c, kArgPaths.c_str());
             if (!input_paths.contents_begin)
@@ -1345,6 +1382,7 @@ class UStoreService : public arf::FlightServerBase {
 
             if (!status)
                 return ar::Status::ExecutionError(status.message());
+            log_info("Process end: Write path");
         }
         return ar::Status::OK();
     }
@@ -1359,7 +1397,7 @@ class UStoreService : public arf::FlightServerBase {
         status_t status;
 
         if (is_query(ticket.ticket, kFlightListCols)) {
-
+            log_info("Process start: List collections");
             // We will need some temporary memory for exports
             auto session = sessions_.lock(params.session_id, status.member_ptr());
             if (!status)
@@ -1430,9 +1468,11 @@ class UStoreService : public arf::FlightServerBase {
             // TODO: Pass right IPC options
             auto stream = std::make_unique<arf::RecordBatchStream>(maybe_reader.ValueUnsafe());
             *response_ptr = std::move(stream);
+            log_info("Process end: List collections");
             return ar::Status::OK();
         }
         else if (is_query(ticket.ticket, kFlightListSnap)) {
+            log_info("Process start: List snapshots");
             // We will need some temporary memory for exports
             auto session = sessions_.lock(params.session_id, status.member_ptr());
             if (!status)
@@ -1488,13 +1528,15 @@ class UStoreService : public arf::FlightServerBase {
             auto stream = std::make_unique<arf::RecordBatchStream>(maybe_reader.ValueUnsafe());
             *response_ptr = std::move(stream);
             return ar::Status::OK();
+            log_info("Process end: List snapshots");
         }
-        return ar::Status::OK();
+        return ar::Status::OK(); // why ??
     }
 };
 
 ar::Status run_server(ustore_str_view_t config, int port, bool quiet) {
 
+    log_info("Running Server");
     database_t db;
     db.open(config).throw_unhandled();
 
@@ -1515,7 +1557,7 @@ ar::Status run_server(ustore_str_view_t config, int port, bool quiet) {
     server->SetShutdownOnSignals({SIGINT});
 
     if (!quiet)
-        std::printf("Listening on port: %i\n", server->port());
+        log_info("Listening on port: ", server->port());
     return server->Serve();
 }
 

@@ -7,6 +7,7 @@
  */
 #include <mutex>
 #include <fstream>
+#include <iostream>
 
 #include <leveldb/db.h>
 #include <leveldb/comparator.h>
@@ -36,6 +37,19 @@ ustore_key_t const ustore_key_unknown_k = std::numeric_limits<ustore_key_t>::max
 bool const ustore_supports_transactions_k = false;
 bool const ustore_supports_named_collections_k = false;
 bool const ustore_supports_snapshots_k = true;
+
+void log_failure(char const* what) {
+    std::cerr << what << ": "
+              << "\n";
+}
+
+template <typename counter_at = char>
+void log_info(char const* info, counter_at* counter = nullptr) {
+    if (counter)
+        std::cout << info << *counter << "\n";
+    else
+        std::cout << info << "\n";
+}
 
 using level_native_t = leveldb::DB;
 using level_status_t = leveldb::Status;
@@ -114,7 +128,7 @@ bool export_error(level_status_t const& status, ustore_error_t* c_error) {
 }
 
 void ustore_database_init(ustore_database_init_t* c_ptr) {
-
+    log_info("Process start: Database initializing");
     ustore_database_init_t& c = *c_ptr;
     try {
         level_options_t options;
@@ -187,9 +201,11 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
     catch (...) {
         *c.error = "Open Failure";
     }
+    log_info("Database successfuly initialized");
 }
 
 void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
+    log_info("Process start: Snapshot list");
     ustore_snapshot_list_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     return_error_if_m(c.count && c.ids, c.error, args_combo_k, "Need outputs!");
@@ -209,9 +225,11 @@ void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
     std::size_t i = 0;
     for (const auto& [id, _] : db.snapshots)
         ids[i++] = id;
+    log_info("Process end: Snapshot list");
 }
 
 void ustore_snapshot_create(ustore_snapshot_create_t* c_ptr) {
+    log_info("Process start: Snapshot create");
     ustore_snapshot_create_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -231,9 +249,11 @@ void ustore_snapshot_create(ustore_snapshot_create_t* c_ptr) {
 
     *c.id = reinterpret_cast<ustore_snapshot_t>(level_snapshot);
     db.snapshots[*c.id] = level_snapshot;
+    log_info("Snapshot successfuly created");
 }
 
 void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
+    log_info("Process start: Snapshot exporting");
     ustore_snapshot_export_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     level_db_t& db = *reinterpret_cast<level_db_t*>(c.db);
@@ -269,9 +289,11 @@ void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
     if (!status.ok())
         leveldb::DestroyDB(c.path, db.options);
     export_error(status, c.error);
+    log_info("Snapshot successfuly exported");
 }
 
 void ustore_snapshot_drop(ustore_snapshot_drop_t* c_ptr) {
+    log_info("Process start: Snapshot droping");
     if (!c_ptr)
         return;
 
@@ -291,6 +313,7 @@ void ustore_snapshot_drop(ustore_snapshot_drop_t* c_ptr) {
     db.mutex.lock();
     db.snapshots.erase(id);
     db.mutex.unlock();
+    log_info("Snapshot successfuly droped");
 }
 
 void write_one( //
@@ -443,7 +466,7 @@ void ustore_read(ustore_read_t* c_ptr) {
 }
 
 void ustore_scan(ustore_scan_t* c_ptr) {
-
+    log_info("Process start: Scan");
     ustore_scan_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -465,6 +488,7 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(scans.limits, scans.count, 0ul);
+    log_info("Keys counted: ", &total_keys);
     auto keys_output = *c.keys = arena.alloc<ustore_key_t>(total_keys, c.error).begin();
     return_if_error_m(c.error);
 
@@ -502,10 +526,11 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     }
 
     offsets[scans.size()] = keys_output - *c.keys;
+    log_info("Process end: Scan");
 }
 
 void ustore_sample(ustore_sample_t* c_ptr) {
-
+    log_info("Process start: Sample");
     ustore_sample_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     if (!c.tasks_count)
@@ -526,6 +551,7 @@ void ustore_sample(ustore_sample_t* c_ptr) {
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(samples.limits, samples.count, 0ul);
+    log_info("Keys counted: ", &total_keys);
     auto keys_output = *c.keys = arena.alloc<ustore_key_t>(total_keys, c.error).begin();
     return_if_error_m(c.error);
 
@@ -555,10 +581,11 @@ void ustore_sample(ustore_sample_t* c_ptr) {
         keys_output += task.limit;
     }
     offsets[samples.count] = keys_output - *c.keys;
+    log_info("Process end: Sample");
 }
 
 void ustore_measure(ustore_measure_t* c_ptr) {
-
+    log_info("Process start: Measure");
     ustore_measure_t& c = *c_ptr;
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
@@ -601,6 +628,7 @@ void ustore_measure(ustore_measure_t* c_ptr) {
             *c.error = "Property Read Failure";
         }
     }
+    log_info("Process end: Measure");
 }
 
 /*********************************************************/
@@ -690,17 +718,21 @@ void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
 /*********************************************************/
 
 void ustore_arena_free(ustore_arena_t c_arena) {
+    log_info("Process start: Arena free");
     clear_linked_memory(c_arena);
+    log_info("Arena is free");
 }
 
 void ustore_transaction_free(ustore_transaction_t) {
 }
 
 void ustore_database_free(ustore_database_t c_db) {
+    log_info("Process start: Database free");
     if (!c_db)
         return;
     level_db_t* db = reinterpret_cast<level_db_t*>(c_db);
     delete db;
+    log_info("Database successfuly deleted");
 }
 
 void ustore_error_free(ustore_error_t) {
