@@ -136,24 +136,34 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
         options.compression = leveldb::kNoCompression;
         options.create_if_missing = true;
 
+        if (!c.config)
+            log_failure("Null config specified");
         return_error_if_m(c.config, c.error, args_wrong_k, "Null config specified");
         // Load config
         config_t config;
         auto st = config_loader_t::load_from_json_string(c.config, config);
+        if (!st)
+            log_failure(st.message());
         return_error_if_m(st, c.error, args_wrong_k, st.message());
 
         // Root path
         stdfs::path root = config.directory;
         stdfs::file_status root_status = stdfs::status(root);
+        if (!(root_status.type() == stdfs::file_type::directory))
+            log_failure("Root isn't a directory");
         return_error_if_m(root_status.type() == stdfs::file_type::directory,
                           c.error,
                           args_wrong_k,
                           "Root isn't a directory");
 
         // Storage paths
+        if (!config.data_directories.empty())
+            log_failure("Multi-disk not supported");
         return_error_if_m(config.data_directories.empty(), c.error, args_wrong_k, "Multi-disk not supported");
 
         // Engine config
+        if (!config.engine.config_url.empty())
+            log_failure("Doesn't support URL configs");
         return_error_if_m(config.engine.config_url.empty(), c.error, args_wrong_k, "Doesn't support URL configs");
 
         auto fill_options = [](json_t const& js, level_options_t& options) {
@@ -179,6 +189,8 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
         // Load from file
         if (!config.engine.config_file_path.empty()) {
             std::ifstream ifs(config.engine.config_file_path);
+            if (!ifs)
+                log_failure("Config file not found");
             return_error_if_m(ifs, c.error, args_wrong_k, "Config file not found");
             auto js = json_t::parse(ifs);
             fill_options(js, options);
@@ -201,16 +213,21 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
     catch (...) {
         *c.error = "Open Failure";
     }
-    log_info("Database successfuly initialized");
+    *c.error ? log_failure(*c.error) : log_info("Database successfuly initialized");
 }
 
 void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
     log_info("Process start: Snapshot list");
     ustore_snapshot_list_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
+    if (!(c.count && c.ids))
+        log_failure("Need outputs!");
     return_error_if_m(c.count && c.ids, c.error, args_combo_k, "Need outputs!");
 
     linked_memory_lock_t arena = linked_memory(c.arena, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     level_db_t& db = *reinterpret_cast<level_db_t*>(c.db);
@@ -220,6 +237,7 @@ void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
 
     // For every snapshot we also need to export IDs
     auto ids = arena.alloc_or_dummy(snapshots_count, c.error, c.ids);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     std::size_t i = 0;
@@ -231,16 +249,22 @@ void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
 void ustore_snapshot_create(ustore_snapshot_create_t* c_ptr) {
     log_info("Process start: Snapshot create");
     ustore_snapshot_create_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
     level_db_t& db = *reinterpret_cast<level_db_t*>(c.db);
     std::lock_guard<std::mutex> locker(db.mutex);
     auto it = db.snapshots.find(*c.id);
-    if (it != db.snapshots.end())
+    if (it != db.snapshots.end()) {
+        if (!it->second)
+            log_failure("Such snapshot already exists!");
         return_error_if_m(it->second, c.error, args_wrong_k, "Such snapshot already exists!");
+    }
 
     level_snapshot_t* level_snapshot = nullptr;
     safe_section("Allocating snapshot handle", c.error, [&] { level_snapshot = new level_snapshot_t(); });
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     level_snapshot->snapshot = db.native->GetSnapshot();
@@ -249,12 +273,14 @@ void ustore_snapshot_create(ustore_snapshot_create_t* c_ptr) {
 
     *c.id = reinterpret_cast<ustore_snapshot_t>(level_snapshot);
     db.snapshots[*c.id] = level_snapshot;
-    log_info("Snapshot successfuly created");
+    *c.error ? log_failure(*c.error) : log_info("Snapshot successfuly created");
 }
 
 void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
     log_info("Process start: Snapshot exporting");
     ustore_snapshot_export_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     level_db_t& db = *reinterpret_cast<level_db_t*>(c.db);
 
@@ -263,6 +289,8 @@ void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
     scan_options.fill_cache = false;
     if (c.id) {
         auto it = db.snapshots.find(c.id);
+        if (!(it != db.snapshots.end()))
+            log_failure("The snapshot does'nt exist!");
         return_error_if_m(it != db.snapshots.end(), c.error, args_wrong_k, "The snapshot does'nt exist!");
         level_snapshot_t& snap = *reinterpret_cast<level_snapshot_t*>(c.id);
         scan_options.snapshot = snap.snapshot;
@@ -271,6 +299,8 @@ void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
     // Create new DB
     level_native_t* native_db = nullptr;
     level_status_t status = leveldb::DB::Open(db.options, c.path, &native_db);
+    if (!status.ok())
+        log_failure("Couldn't create a new database");
     return_error_if_m(status.ok(), c.error, args_wrong_k, "Couldn't create a new database");
 
     // Copy all data into new DB
@@ -281,6 +311,7 @@ void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
     }
     catch (...) {
         *c.error = "Fail To Copy Database";
+        log_failure(*c.error);
     }
 
     // Close
@@ -289,7 +320,7 @@ void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
     if (!status.ok())
         leveldb::DestroyDB(c.path, db.options);
     export_error(status, c.error);
-    log_info("Snapshot successfuly exported");
+    *c.error ? log_failure(*c.error) : log_info("Snapshot successfuly exported");
 }
 
 void ustore_snapshot_drop(ustore_snapshot_drop_t* c_ptr) {
@@ -298,13 +329,17 @@ void ustore_snapshot_drop(ustore_snapshot_drop_t* c_ptr) {
         return;
 
     ustore_snapshot_drop_t& c = *c_ptr;
-    if (!c.id)
+    if (!c.id) {
+        log_failure("Id is not provided");
         return;
+    }
 
     level_db_t& db = *reinterpret_cast<level_db_t*>(c.db);
     level_snapshot_t& snap = *reinterpret_cast<level_snapshot_t*>(c.id);
-    if (!snap.snapshot)
+    if (!snap.snapshot) {
+        log_failure("Snapshot is not provided");
         return;
+    }
 
     db.native->ReleaseSnapshot(snap.snapshot);
     snap.snapshot = nullptr;
@@ -468,9 +503,12 @@ void ustore_read(ustore_read_t* c_ptr) {
 void ustore_scan(ustore_scan_t* c_ptr) {
     log_info("Process start: Scan");
     ustore_scan_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
     linked_memory_lock_t arena = linked_memory(c.arena, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     level_db_t& db = *reinterpret_cast<level_db_t*>(c.db);
@@ -479,12 +517,15 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     strided_iterator_gt<ustore_length_t const> limits {c.count_limits, c.count_limits_stride};
     scans_arg_t scans {{}, start_keys, limits, c.tasks_count};
 
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     // 1. Allocate a tape for all the values to be fetched
     auto offsets = arena.alloc_or_dummy(scans.count + 1, c.error, c.offsets);
+    log_failure(*c.error);
     return_if_error_m(c.error);
     auto counts = arena.alloc_or_dummy(scans.count, c.error, c.counts);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(scans.limits, scans.count, 0ul);
@@ -497,6 +538,8 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     options.fill_cache = false;
     if (c.snapshot) {
         auto it = db.snapshots.find(c.snapshot);
+        if (!(it != db.snapshots.end()))
+            log_failure("The snapshot does'nt exist!");
         return_error_if_m(it != db.snapshots.end(), c.error, args_wrong_k, "The snapshot does'nt exist!");
         options.snapshot = snap.snapshot;
     }
@@ -507,6 +550,7 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     }
     catch (...) {
         *c.error = "Fail To Create Iterator";
+        log_failure(*c.error);
         return;
     }
     for (ustore_size_t i = 0; i != c.tasks_count; ++i) {
@@ -532,11 +576,14 @@ void ustore_scan(ustore_scan_t* c_ptr) {
 void ustore_sample(ustore_sample_t* c_ptr) {
     log_info("Process start: Sample");
     ustore_sample_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     if (!c.tasks_count)
         return;
 
     linked_memory_lock_t arena = linked_memory(c.arena, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     level_db_t& db = *reinterpret_cast<level_db_t*>(c.db);
@@ -546,8 +593,10 @@ void ustore_sample(ustore_sample_t* c_ptr) {
 
     // 1. Allocate a tape for all the values to be fetched
     auto offsets = arena.alloc_or_dummy(samples.count + 1, c.error, c.offsets);
+    log_failure(*c.error);
     return_if_error_m(c.error);
     auto counts = arena.alloc_or_dummy(samples.count, c.error, c.counts);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(samples.limits, samples.count, 0ul);
@@ -560,6 +609,8 @@ void ustore_sample(ustore_sample_t* c_ptr) {
     options.fill_cache = false;
     if (c.snapshot) {
         auto it = db.snapshots.find(c.snapshot);
+        if (!(it != db.snapshots.end()))
+            log_failure("The snapshot does'nt exist!");
         return_error_if_m(it != db.snapshots.end(), c.error, args_wrong_k, "The snapshot does'nt exist!");
         options.snapshot = snap.snapshot;
     }
@@ -572,6 +623,7 @@ void ustore_sample(ustore_sample_t* c_ptr) {
         safe_section("Creating a LevelDB iterator", c.error, [&] {
             it = level_iter_uptr_t(db.native->NewIterator(options));
         });
+        log_failure(*c.error);
         return_if_error_m(c.error);
 
         ptr_range_gt<ustore_key_t> sampled_keys(keys_output, task.limit);
@@ -587,9 +639,12 @@ void ustore_sample(ustore_sample_t* c_ptr) {
 void ustore_measure(ustore_measure_t* c_ptr) {
     log_info("Process start: Measure");
     ustore_measure_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
     linked_memory_lock_t arena = linked_memory(c.arena, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     auto min_cardinalities = arena.alloc_or_dummy(c.tasks_count, c.error, c.min_cardinalities);
@@ -598,6 +653,7 @@ void ustore_measure(ustore_measure_t* c_ptr) {
     auto max_value_bytes = arena.alloc_or_dummy(c.tasks_count, c.error, c.max_value_bytes);
     auto min_space_usages = arena.alloc_or_dummy(c.tasks_count, c.error, c.min_space_usages);
     auto max_space_usages = arena.alloc_or_dummy(c.tasks_count, c.error, c.max_space_usages);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     level_db_t& db = *reinterpret_cast<level_db_t*>(c.db);
@@ -626,6 +682,7 @@ void ustore_measure(ustore_measure_t* c_ptr) {
         }
         catch (...) {
             *c.error = "Property Read Failure";
+            log_failure(*c.error);
         }
     }
     log_info("Process end: Measure");
@@ -636,7 +693,7 @@ void ustore_measure(ustore_measure_t* c_ptr) {
 /*********************************************************/
 
 void ustore_collection_create(ustore_collection_create_t* c_ptr) {
-
+    log_failure("Collections not supported by LevelDB!");
     ustore_collection_create_t& c = *c_ptr;
     auto name_len = c.name ? std::strlen(c.name) : 0;
     return_error_if_m(name_len, c.error, args_wrong_k, "Collections not supported by LevelDB!");
@@ -644,9 +701,14 @@ void ustore_collection_create(ustore_collection_create_t* c_ptr) {
 
 void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
 
+    log_info("Process start: Collection droped");
     ustore_collection_drop_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     bool invalidate = c.mode == ustore_drop_keys_vals_handle_k;
+    if (!(c.id == ustore_collection_main_k && !invalidate))
+        log_failure("Collections not supported by LevelDB!");
     return_error_if_m(c.id == ustore_collection_main_k && !invalidate,
                       c.error,
                       args_combo_k,
@@ -671,6 +733,7 @@ void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
     options.sync = true;
     level_status_t status = db.native->Write(options, &batch);
     export_error(status, c.error);
+    *c.error ? log_failure(*c.error) : log_info("Collection successfuly droped");
 }
 
 void ustore_collection_list(ustore_collection_list_t* c_ptr) {
@@ -688,13 +751,18 @@ void ustore_collection_list(ustore_collection_list_t* c_ptr) {
 void ustore_database_control(ustore_database_control_t* c_ptr) {
 
     ustore_database_control_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
-    if (!c.request && (*c.error = "Request is NULL!"))
+    if (!c.request && (*c.error = "Request is NULL!")) {
+        log_failure(*c.error);
         return;
+    }
 
     *c.response = NULL;
     *c.error = "Controls aren't supported in this implementation!";
+    log_failure(*c.error);
 }
 
 /*********************************************************/
@@ -705,12 +773,14 @@ void ustore_transaction_init(ustore_transaction_init_t* c_ptr) {
 
     ustore_transaction_init_t& c = *c_ptr;
     *c.error = "Transactions not supported by LevelDB!";
+    log_failure(*c.error);
 }
 
 void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
 
     ustore_transaction_commit_t& c = *c_ptr;
     *c.error = "Transactions not supported by LevelDB!";
+    log_failure(*c.error);
 }
 
 /*********************************************************/
@@ -728,8 +798,10 @@ void ustore_transaction_free(ustore_transaction_t) {
 
 void ustore_database_free(ustore_database_t c_db) {
     log_info("Process start: Database free");
-    if (!c_db)
+    if (!c_db) {
+        log_failure("Database is not provided");
         return;
+    }
     level_db_t* db = reinterpret_cast<level_db_t*>(c_db);
     delete db;
     log_info("Database successfuly deleted");

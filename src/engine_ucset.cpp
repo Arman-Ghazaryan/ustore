@@ -442,6 +442,8 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
     ustore_database_init_t& c = *c_ptr;
     safe_section("Initializing DBMS", c.error, [&] {
         auto maybe_pairs = ucset_t::make();
+        if (!maybe_pairs)
+            log_failure("Couldn't build consistent set");
         return_error_if_m(maybe_pairs, c.error, error_unknown_k, "Couldn't build consistent set");
         auto db = database_t(std::move(maybe_pairs).value());
         auto db_ptr = std::make_unique<database_t>(std::move(db)).release();
@@ -450,21 +452,31 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
             // Load config
             config_t config;
             auto status = config_loader_t::load_from_json_string(c.config, config);
+            if (!status)
+                log_failure(status.message());
             return_error_if_m(status, c.error, args_wrong_k, status.message());
 
             // Root path
             stdfs::path root = config.directory;
             stdfs::file_status root_status = stdfs::status(root);
+            if (!(root_status.type() == stdfs::file_type::directory))
+                log_failure("Root isn't a directory");
             return_error_if_m(root_status.type() == stdfs::file_type::directory,
                               c.error,
                               args_wrong_k,
                               "Root isn't a directory");
 
             // Storage paths
+            if (!config.data_directories.empty())
+                log_failure("Multi-disk not supported");
             return_error_if_m(config.data_directories.empty(), c.error, args_wrong_k, "Multi-disk not supported");
 
             // Engine config
+            if (!config.engine.config_url.empty())
+                log_failure("Doesn't support URL configs");
             return_error_if_m(config.engine.config_url.empty(), c.error, args_wrong_k, "Doesn't support URL configs");
+            if (!config.engine.config.empty())
+                log_failure("Doesn't support nested configs");
             return_error_if_m(config.engine.config.empty(), c.error, args_wrong_k, "Doesn't support nested configs");
 
             auto fill_options = [](json_t const& js, ucset_options_t& options) {
@@ -479,7 +491,10 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
             // Load from file
             ucset_options_t options;
             if (!config.engine.config_file_path.empty()) {
+
                 std::ifstream ifs(config.engine.config_file_path);
+                if (!ifs)
+                    log_failure("Config file not found");
                 return_error_if_m(ifs, c.error, args_wrong_k, "Config file not found");
                 auto js = json_t::parse(ifs);
                 fill_options(js, options);
@@ -499,21 +514,25 @@ void ustore_database_init(ustore_database_init_t* c_ptr) {
 void ustore_snapshot_list(ustore_snapshot_list_t* c_ptr) {
     ustore_snapshot_list_t& c = *c_ptr;
     *c.error = "Snapshots not supported by UCSet!";
+    log_failure(*c.error);
 }
 
 void ustore_snapshot_create(ustore_snapshot_create_t* c_ptr) {
     ustore_snapshot_create_t& c = *c_ptr;
     *c.error = "Snapshots not supported by UCSet!";
+    log_failure(*c.error);
 }
 
 void ustore_snapshot_export(ustore_snapshot_export_t* c_ptr) {
     ustore_snapshot_export_t& c = *c_ptr;
     *c.error = "Snapshots not supported by UCSet!";
+    log_failure(*c.error);
 }
 
 void ustore_snapshot_drop(ustore_snapshot_drop_t* c_ptr) {
     ustore_snapshot_drop_t& c = *c_ptr;
     *c.error = "Snapshots not supported by UCSet!";
+    log_failure(*c.error);
 }
 
 void ustore_read(ustore_read_t* c_ptr) {
@@ -655,11 +674,14 @@ void ustore_write(ustore_write_t* c_ptr) {
 void ustore_scan(ustore_scan_t* c_ptr) {
     log_info("Process start: Scan");
     ustore_scan_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     if (!c.tasks_count)
         return;
 
     linked_memory_lock_t arena = linked_memory(c.arena, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     database_t& db = *reinterpret_cast<database_t*>(c.db);
@@ -670,17 +692,21 @@ void ustore_scan(ustore_scan_t* c_ptr) {
     scans_arg_t scans {collections, start_keys, lens, c.tasks_count};
 
     validate_scan(c.transaction, scans, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     // 1. Allocate a tape for all the values to be fetched
     auto offsets = arena.alloc_or_dummy(scans.count + 1, c.error, c.offsets);
+    log_failure(*c.error);
     return_if_error_m(c.error);
     auto counts = arena.alloc_or_dummy(scans.count, c.error, c.counts);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(scans.limits, scans.count, 0ul);
     log_info("Keys counted: ", &total_keys);
     auto keys_output = *c.keys = arena.alloc<ustore_key_t>(total_keys, c.error).begin();
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     // 2. Fetch the data
@@ -699,9 +725,11 @@ void ustore_scan(ustore_scan_t* c_ptr) {
         auto status = c.transaction //
                           ? scan_and_watch(txn, previous_key, scan.limit, c.options, found_pair)
                           : scan_and_watch(db.pairs, previous_key, scan.limit, c.options, found_pair);
-        if (!status)
-            return export_error_code(status, c.error);
-
+        if (!status) {
+            export_error_code(status, c.error);
+            log_failure(*c.error);
+            return;
+        }
         counts[task_idx] = matched_pairs_count;
     }
     offsets[scans.count] = keys_output - *c.keys;
@@ -732,12 +760,19 @@ struct key_iterator_t {
 void ustore_sample(ustore_sample_t* c_ptr) {
     log_info("Process start: Sample");
     ustore_sample_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
+    if (c.transaction)
+        log_failure("Transaction sampling aren't supported!");
     return_error_if_m(!c.transaction, c.error, uninitialized_state_k, "Transaction sampling aren't supported!");
-    if (!c.tasks_count)
+    if (!c.tasks_count) {
+        log_failure("Tasks count is 0");
         return;
+    }
 
     linked_memory_lock_t arena = linked_memory(c.arena, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     database_t& db = *reinterpret_cast<database_t*>(c.db);
@@ -746,8 +781,10 @@ void ustore_sample(ustore_sample_t* c_ptr) {
     sample_args_t samples {collections, lens, c.tasks_count};
 
     auto offsets = arena.alloc_or_dummy(samples.count + 1, c.error, c.offsets);
+    log_failure(*c.error);
     return_if_error_m(c.error);
     auto counts = arena.alloc_or_dummy(samples.count, c.error, c.counts);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     auto total_keys = reduce_n(samples.limits, samples.count, 0ul);
@@ -768,6 +805,7 @@ void ustore_sample(ustore_sample_t* c_ptr) {
 
         auto status = db.pairs.sample_range(min, max, random_generator, seen, task.limit, iter);
         export_error_code(status, c.error);
+        log_failure(*c.error);
         return_if_error_m(c.error);
 
         counts[task_idx] = task.limit;
@@ -780,11 +818,16 @@ void ustore_sample(ustore_sample_t* c_ptr) {
 void ustore_measure(ustore_measure_t* c_ptr) {
     log_info("Process start: Measure");
     ustore_measure_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
-    if (!c.tasks_count)
+    if (!c.tasks_count) {
+        log_failure("Tasks count is 0");
         return;
+    }
 
     linked_memory_lock_t arena = linked_memory(c.arena, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     auto min_cardinalities = arena.alloc_or_dummy(c.tasks_count, c.error, c.min_cardinalities);
@@ -793,6 +836,7 @@ void ustore_measure(ustore_measure_t* c_ptr) {
     auto max_value_bytes = arena.alloc_or_dummy(c.tasks_count, c.error, c.max_value_bytes);
     auto min_space_usages = arena.alloc_or_dummy(c.tasks_count, c.error, c.min_space_usages);
     auto max_space_usages = arena.alloc_or_dummy(c.tasks_count, c.error, c.max_space_usages);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     database_t& db = *reinterpret_cast<database_t*>(c.db);
@@ -818,6 +862,8 @@ void ustore_measure(ustore_measure_t* c_ptr) {
             space_usage += pair.range.size() + sizeof(pair_t);
         });
         export_error_code(status, c.error);
+        if (*c.error)
+            log_failure(*c.error);
         return_if_error_m(c.error);
 
         min_cardinalities[i] = static_cast<ustore_size_t>(cardinality);
@@ -838,27 +884,37 @@ void ustore_collection_create(ustore_collection_create_t* c_ptr) {
     log_info("Process start: Collection create");
     ustore_collection_create_t& c = *c_ptr;
     auto name_len = c.name ? std::strlen(c.name) : 0;
+    if (!name_len)
+        log_failure("Default collection is always present");
     return_error_if_m(name_len, c.error, args_wrong_k, "Default collection is always present");
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     database_t& db = *reinterpret_cast<database_t*>(c.db);
     std::unique_lock _ {db.restructuring_mutex};
 
     std::string_view collection_name {c.name, name_len};
     auto collection_it = db.names.find(collection_name);
+    if (!(collection_it == db.names.end()))
+        log_failure("Such collection already exists!");
     return_error_if_m(collection_it == db.names.end(), c.error, args_wrong_k, "Such collection already exists!");
 
     auto new_collection_id = new_collection(db);
     safe_section("Inserting new collection", c.error, [&] { db.names.emplace(collection_name, new_collection_id); });
     *c.id = new_collection_id;
-    log_info("Collection successfuly created");
+    *c.error ? log_failure(*c.error) : log_info("Collection successfuly created");
 }
 
 void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
     log_info("Process start: Collection drop");
     ustore_collection_drop_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
 
     bool invalidate = c.mode == ustore_drop_keys_vals_handle_k;
+    if (!(c.id != ustore_collection_main_k || !invalidate))
+        log_failure("Default collection can't be invalidated.");
     return_error_if_m(c.id != ustore_collection_main_k || !invalidate,
                       c.error,
                       args_combo_k,
@@ -869,8 +925,11 @@ void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
 
     if (c.mode == ustore_drop_keys_vals_handle_k) {
         auto status = db.pairs.erase_range(c.id, c.id + 1, no_op_t {});
-        if (!status)
-            return export_error_code(status, c.error);
+        if (!status) {
+            export_error_code(status, c.error);
+            log_failure(*c.error);
+            return;
+        }
 
         for (auto it = db.names.begin(); it != db.names.end(); ++it) {
             if (c.id != it->second)
@@ -883,26 +942,33 @@ void ustore_collection_drop(ustore_collection_drop_t* c_ptr) {
 
     else if (c.mode == ustore_drop_keys_vals_k) {
         auto status = db.pairs.erase_range(c.id, c.id + 1, no_op_t {});
-        log_info("Collection successfuly droped");
-        return export_error_code(status, c.error);
+        export_error_code(status, c.error);
+        *c.error ? log_failure(*c.error) : log_info("Collection successfuly droped");
+        return;
     }
 
     else if (c.mode == ustore_drop_vals_k) {
         auto status = db.pairs.range(c.id, c.id + 1, [&](pair_t& pair) noexcept {
             pair = pair_t {pair.collection_key, value_view_t::make_empty(), nullptr};
         });
-        log_info("Collection successfuly droped");
-        return export_error_code(status, c.error);
+        export_error_code(status, c.error);
+        *c.error ? log_failure(*c.error) : log_info("Collection successfuly droped");
+        return;
     }
 }
 
 void ustore_collection_list(ustore_collection_list_t* c_ptr) {
     log_info("Process start: Collection list");
     ustore_collection_list_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
+    if (!(c.count && c.names))
+        log_failure("Need names and outputs!");
     return_error_if_m(c.count && c.names, c.error, args_combo_k, "Need names and outputs!");
 
     linked_memory_lock_t arena = linked_memory(c.arena, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     database_t& db = *reinterpret_cast<database_t*>(c.db);
@@ -917,12 +983,15 @@ void ustore_collection_list(ustore_collection_list_t* c_ptr) {
         strings_length += name_and_handle.first.size() + 1;
     auto names = arena.alloc<char>(strings_length, c.error).begin();
     *c.names = names;
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     // For every collection we also need to export IDs and offsets
     auto ids = arena.alloc_or_dummy(collections_count, c.error, c.ids);
+    log_failure(*c.error);
     return_if_error_m(c.error);
     auto offs = arena.alloc_or_dummy(collections_count + 1, c.error, c.offsets);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     std::size_t i = 0;
@@ -940,13 +1009,19 @@ void ustore_collection_list(ustore_collection_list_t* c_ptr) {
 }
 
 void ustore_database_control(ustore_database_control_t* c_ptr) {
-
+    log_info("Process start: Database control");
     ustore_database_control_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
+    if (!c.request)
+        log_failure("Request is uninitialized");
     return_error_if_m(c.request, c.error, uninitialized_state_k, "Request is uninitialized");
 
     *c.response = NULL;
     log_error_m(c.error, missing_feature_k, "Controls aren't supported in this implementation!");
+    log_failure(*c.error);
+    log_info("Process end: Database control");
 }
 
 /*********************************************************/
@@ -956,8 +1031,11 @@ void ustore_database_control(ustore_database_control_t* c_ptr) {
 void ustore_transaction_init(ustore_transaction_init_t* c_ptr) {
     log_info("Process start: Transaction initializing");
     ustore_transaction_init_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     validate_transaction_begin(c.transaction, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     database_t& db = *reinterpret_cast<database_t*>(c.db);
@@ -969,29 +1047,40 @@ void ustore_transaction_init(ustore_transaction_init_t* c_ptr) {
         return_error_if_m(maybe_txn, c.error, error_unknown_k, "Couldn't start a transaction");
         *c.transaction = std::make_unique<transaction_t>(std::move(maybe_txn).value()).release();
     });
+    log_failure(*c.error);
     return_if_error_m(c.error);
 
     transaction_t& txn = *reinterpret_cast<transaction_t*>(*c.transaction);
     auto status = txn.reset();
-    log_info("Transaction successfuly initialized");
-    return export_error_code(status, c.error);
+    export_error_code(status, c.error);
+    *c.error ? log_failure(*c.error) : log_info("Transaction successfuly initialized");
+    return;
 }
 
 void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
     log_info("Process start: Transaction commit");
     ustore_transaction_commit_t& c = *c_ptr;
+    if (!c.db)
+        log_failure("DataBase is uninitialized");
     return_error_if_m(c.db, c.error, uninitialized_state_k, "DataBase is uninitialized");
     database_t& db = *reinterpret_cast<database_t*>(c.db);
 
     validate_transaction_commit(c.transaction, c.options, c.error);
+    log_failure(*c.error);
     return_if_error_m(c.error);
     transaction_t& txn = *reinterpret_cast<transaction_t*>(c.transaction);
     auto status = txn.stage();
-    if (!status)
-        return export_error_code(status, c.error);
+    if (!status) {
+        export_error_code(status, c.error);
+        log_failure(*c.error);
+        return;
+    }
     status = txn.commit();
-    if (!status)
-        return export_error_code(status, c.error);
+    if (!status) {
+        export_error_code(status, c.error);
+        log_failure(*c.error);
+        return;
+    }
 
     if (c.sequence_number)
         *c.sequence_number = txn.generation();
@@ -999,7 +1088,7 @@ void ustore_transaction_commit(ustore_transaction_commit_t* c_ptr) {
     // TODO: Degrade the lock to "shared" state before starting expensive IO
     if (c.options & ustore_option_write_flush_k)
         safe_section("Saving to disk", c.error, [&] { write(db, db.persisted_directory, c.error); });
-    log_info("Transaction successfuly commited");
+    *c.error ? log_failure(*c.error) : log_info("Transaction successfuly commited");
 }
 
 /*********************************************************/
@@ -1014,8 +1103,10 @@ void ustore_arena_free(ustore_arena_t c_arena) {
 
 void ustore_transaction_free(ustore_transaction_t const c_transaction) {
     log_info("Process start: Transaction free");
-    if (!c_transaction)
+    if (!c_transaction) {
+        log_failure("Transaction is not provided");
         return;
+    }
     transaction_t& txn = *reinterpret_cast<transaction_t*>(c_transaction);
     delete &txn;
     log_info("Transaction successfuly deleted");
@@ -1023,8 +1114,10 @@ void ustore_transaction_free(ustore_transaction_t const c_transaction) {
 
 void ustore_database_free(ustore_database_t c_db) {
     log_info("Process start: Database free");
-    if (!c_db)
+    if (!c_db) {
+        log_failure("Database is not provided");
         return;
+    }
 
     database_t& db = *reinterpret_cast<database_t*>(c_db);
     if (!db.persisted_directory.empty()) {
