@@ -1673,13 +1673,19 @@ ar::Status run_server(ustore_str_view_t config, int port, bool quiet) {
     status_t status;
     ustore_arena_t c_arena(db);
     linked_memory_lock_t arena = linked_memory(&c_arena, ustore_options_default_k, status.member_ptr());
-    if (!status)
+    if (!status) {
+        server_log_failure(status.message());
         return ar::Status::ExecutionError(status.message());
+    }
     arrow_mem_pool_t pool(arena);
     options.memory_manager = ar::CPUDevice::memory_manager(&pool);
 
     auto server = std::make_unique<UStoreService>(std::move(db));
-    ARROW_RETURN_NOT_OK(server->Init(options));
+    auto ar_status = server->Init(options);
+    if (!ar_status.ok()) {
+        server_log_failure(ar_status.message().c_str());
+        return ar_status;
+    }
 
     server->SetShutdownOnSignals({SIGINT});
 
