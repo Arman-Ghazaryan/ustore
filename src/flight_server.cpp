@@ -1664,35 +1664,58 @@ class UStoreService : public arf::FlightServerBase {
 ar::Status run_server(ustore_str_view_t config, int port, bool quiet) {
 
     server_log_info("Running Server");
+    server_log_info("Instantiate database");
     database_t db;
+    server_log_info("A database instance has been created");
+    server_log_info("Opening DB");
     db.open(config).throw_unhandled();
+    server_log_info("DB is open");
 
+    server_log_info("Getting server location");
     arf::Location server_location = arf::Location::ForGrpcTcp("0.0.0.0", port).ValueUnsafe();
+    server_log_info("Received the server location");
+    server_log_info("Instantiate Server options");
     arf::FlightServerOptions options(server_location);
+    server_log_info("A server options has been created");
 
     status_t status;
+    server_log_info("Instantiate c_arena");
     ustore_arena_t c_arena(db);
+    server_log_info("A c_arena has been created");
+    server_log_info("Instantiate arena");
     linked_memory_lock_t arena = linked_memory(&c_arena, ustore_options_default_k, status.member_ptr());
+    server_log_info("A arena has been created");
     if (!status) {
         server_log_failure(status.message());
         return ar::Status::ExecutionError(status.message());
     }
+    server_log_info("Instantiate memory pool");
     arrow_mem_pool_t pool(arena);
+    server_log_info("A memory pool has been created");
+    server_log_info("Setting memory manager");
     options.memory_manager = ar::CPUDevice::memory_manager(&pool);
+    server_log_info("Memory manager settled");
 
+    server_log_info("Instantiate server");
     auto server = std::make_unique<UStoreService>(std::move(db));
+    server_log_info("A server has been created");
+    server_log_info("Initialize server");
     auto ar_status = server->Init(options);
+    server_log_info("Server initialized");
     if (!ar_status.ok()) {
         server_log_failure(ar_status.message().c_str());
         return ar_status;
     }
 
+    server_log_info("Setting shut down signals");
     server->SetShutdownOnSignals({SIGINT});
+    server_log_info("Shut down signals settled");
 
     if (!quiet) {
         auto port = server->port();
         server_log_info("Listening on port: ", &port);
     }
+    server_log_info("Calling server->Serve()");
     return server->Serve();
 }
 
