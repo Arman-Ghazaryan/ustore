@@ -1664,11 +1664,16 @@ class UStoreService : public arf::FlightServerBase {
 ar::Status run_server(ustore_str_view_t config, int port, bool quiet) {
 
     server_log_info("Running Server");
+    status_t status;
     server_log_info("Instantiate database");
     database_t db;
     server_log_info("A database instance has been created");
     server_log_info("Opening DB");
-    db.open(config).throw_unhandled();
+    status =  db.open(config);
+    if (!status) {
+        server_log_failure(status.message());
+        return ar::Status::ExecutionError(status.message());
+    }
     server_log_info("DB is open");
 
     server_log_info("Getting server location");
@@ -1678,7 +1683,6 @@ ar::Status run_server(ustore_str_view_t config, int port, bool quiet) {
     arf::FlightServerOptions options(server_location);
     server_log_info("A server options has been created");
 
-    status_t status;
     server_log_info("Instantiate c_arena");
     ustore_arena_t c_arena(db);
     server_log_info("A c_arena has been created");
